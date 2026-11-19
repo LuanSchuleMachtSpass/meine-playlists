@@ -23,5 +23,6 @@
                 <data android:scheme="meineplaylists" android:host="login" />
             </intent-filter>
         </activity>
+        <receiver android:name=".SleepReceiver" android:exported="false" />
     </application>
 </manifest>

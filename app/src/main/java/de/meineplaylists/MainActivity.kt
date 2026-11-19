@@ -93,7 +93,9 @@ class MainActivity : Activity() {
         override fun run() {
             if (!running) return
             if (tickCount++ % 4 == 0) fetchNowPlaying()
-            if (current() is NowPage) renderNowProgress()
+            if (Safety.enforceLocal(this@MainActivity)) capNotice()
+            if (current() is NowPage) { renderNowProgress(); renderTimerLine() }
+            if (current() is SettingsPage && tickCount % 15 == 0) render()
             handler.postDelayed(this, 1000)
         }
     }
@@ -140,8 +142,10 @@ class MainActivity : Activity() {
             override fun onStartTrackingTouch(sb: SeekBar) { userDraggingVolume = true }
             override fun onStopTrackingTouch(sb: SeekBar) {
                 userDraggingVolume = false
+                val cap = Safety.earCap(this@MainActivity)
+                if (cap > 0 && sb.progress > cap) { sb.progress = cap; capNotice() }
                 val v = sb.progress
-                remote.withDevice { Spotify.setVolume(this, v) }
+                remote.withDevice { Spotify.setVolume(this@MainActivity, v) }
             }
         })
 
@@ -280,6 +284,9 @@ class MainActivity : Activity() {
             },
         )
         is SettingsPage -> listOf(
+            Row("Zeitlimit", timerText(), R.drawable.ic_timer, orange) { askTimer() },
+            Row("Ohrschutz", Safety.earCap(this).let { if (it > 0) "An · höchstens $it % Lautstärke" else "Aus" },
+                R.drawable.ic_ear, pink) { askEarCap() },
             Row("Neu anmelden", "Bei Problemen oder neuen Funktionen", R.drawable.ic_login, blue) { openLogin() },
             Row("Client-ID ändern", Auth.clientId(this)?.let { it.take(8) + "…" }, R.drawable.ic_settings, grey) { askClientId() },
             Row("Abmelden", null, R.drawable.ic_back, grey, chevron = false) { confirmLogout() },
@@ -429,6 +436,7 @@ class MainActivity : Activity() {
             ui {
                 val trackChanged = r?.trackUri != np?.trackUri
                 np = r
+                capSpotifyVolume(r?.volume)
                 npAt = System.currentTimeMillis()
                 renderPlayer()
                 if (trackChanged && current() !is NowPage) adapter.notifyDataSetChanged()
@@ -469,12 +477,21 @@ class MainActivity : Activity() {
         } else {
             npTitle.text = n.title
             npArtist.text = n.subtitle
-            npDevice.text = n.deviceName?.let { "Wiedergabe auf $it" } ?: ""
             Images.load(npCover, n.bigImageUrl ?: n.imageUrl)
             if (!userDraggingVolume) n.volume?.let { npVolume.progress = it }
         }
         npVolume.isEnabled = n?.volume != null
         renderNowProgress()
+        renderTimerLine()
+    }
+
+    /** Zeile unter dem Lautstärkeregler: Gerät, Zeitlimit, Ohrschutz. */
+    private fun renderTimerLine() {
+        val parts = ArrayList<String>()
+        np?.deviceName?.let { parts += "auf $it" }
+        if (Safety.sleepAt(this) != 0L) parts += "Zeitlimit: " + timerText().substringAfter("· ")
+        Safety.earCap(this).takeIf { it > 0 }?.let { parts += "Ohrschutz $it %" }
+        npDevice.text = parts.joinToString("  ·  ")
     }
 
     private fun renderNowProgress() {
@@ -486,6 +503,74 @@ class MainActivity : Activity() {
         npProgress.progress = (p * 1000 / n.durationMs).toInt()
         npLeft.text = formatDuration(p)
         npRight.text = "-" + formatDuration(n.durationMs - p)
+    }
+
+    // ---------- Zeitlimit & Ohrschutz ----------
+    private fun timerText(): String {
+        val at = Safety.sleepAt(this)
+        if (at == 0L) return "Aus"
+        val left = ((at - System.currentTimeMillis()) / 60_000).coerceAtLeast(0) + 1
+        val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.GERMANY).format(java.util.Date(at))
+        return "Stoppt um $time · noch $left Min."
+    }
+
+    private fun askTimer() {
+        val minutes = intArrayOf(0, 15, 30, 45, 60, 90, 120)
+        val labels = minutes.map { if (it == 0) "Aus" else "$it Minuten" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Zeitlimit – Musik stoppt nach …")
+            .setItems(labels) { _, i ->
+                if (minutes[i] == 0) Safety.cancelTimer(this) else Safety.startTimer(this, minutes[i])
+                Toast.makeText(this, if (minutes[i] == 0) "Zeitlimit aus" else "Musik stoppt in ${minutes[i]} Minuten", Toast.LENGTH_SHORT).show()
+                render()
+            }
+            .show()
+    }
+
+    private fun askEarCap() {
+        val caps = intArrayOf(0, 40, 50, 60, 70)
+        val labels = caps.map { if (it == 0) "Aus" else "Höchstens $it % Lautstärke" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Ohrschutz")
+            .setItems(labels) { _, i ->
+                Safety.setEarCap(this, caps[i])
+                if (caps[i] > 0) {
+                    Safety.enforceLocal(this)
+                    capSpotifyVolume(np?.volume)
+                    Toast.makeText(this, "Ohrschutz an: maximal ${caps[i]} %", Toast.LENGTH_SHORT).show()
+                }
+                render()
+            }
+            .show()
+    }
+
+    /** Senkt die Lautstärke des Spotify-Geräts, falls sie über dem Ohrschutz-Limit liegt. */
+    private fun capSpotifyVolume(current: Int?) {
+        val cap = Safety.earCap(this)
+        if (cap <= 0 || current == null || current <= cap) return
+        bg { try { Spotify.setVolume(this, cap) } catch (_: Exception) {} }
+        np = np?.copy(volume = cap)
+    }
+
+    private var lastCapToast = 0L
+    private fun capNotice() {
+        val now = System.currentTimeMillis()
+        if (now - lastCapToast > 4000) {
+            lastCapToast = now
+            Toast.makeText(this, "Ohrschutz: Lautstärke ist begrenzt", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // Lauter-Taste blockieren, sobald das Ohrschutz-Limit erreicht ist
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP && Safety.earCap(this) > 0) {
+            val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+            if (am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) >= Safety.capIndex(am, Safety.earCap(this))) {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) capNotice()
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     // ---------- Einrichtung & Login ----------
