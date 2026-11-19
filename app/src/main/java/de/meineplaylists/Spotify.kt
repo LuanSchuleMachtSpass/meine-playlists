@@ -15,6 +15,8 @@ data class Track(
 data class NowPlaying(
     val isPlaying: Boolean, val title: String, val subtitle: String,
     val imageUrl: String?, val deviceName: String?, val trackUri: String?,
+    val progressMs: Long = 0, val durationMs: Long = 0, val volume: Int? = null,
+    val bigImageUrl: String? = null,
 )
 
 data class Device(val id: String, val name: String, val type: String)
@@ -110,9 +112,13 @@ object Spotify {
 
     fun nowPlaying(ctx: Context): NowPlaying? {
         val j = Api.get(ctx, "/me/player?additional_types=episode") ?: return null
-        val device = j.optJSONObject("device")?.str("name")
+        val dev = j.optJSONObject("device")
+        val device = dev?.str("name")
+        val volume = if (dev != null && dev.has("volume_percent") && !dev.isNull("volume_percent")) dev.optInt("volume_percent") else null
         val item = j.optJSONObject("item")
-            ?: return NowPlaying(j.optBoolean("is_playing"), "Unbekannter Titel", "", null, device, null)
+            ?: return NowPlaying(j.optBoolean("is_playing"), "Unbekannter Titel", "", null, device, null, volume = volume)
+        val big = if (item.str("type") == "episode") image(item.optJSONArray("images"), Size.M)
+        else image(item.optJSONObject("album")?.optJSONArray("images"), Size.M)
         return NowPlaying(
             isPlaying = j.optBoolean("is_playing"),
             title = item.str("name") ?: "Unbekannt",
@@ -120,7 +126,15 @@ object Spotify {
             imageUrl = smallImageOf(item),
             deviceName = device,
             trackUri = item.str("uri"),
+            progressMs = j.optLong("progress_ms"),
+            durationMs = item.optLong("duration_ms"),
+            volume = volume,
+            bigImageUrl = big,
         )
+    }
+
+    fun setVolume(ctx: Context, percent: Int) {
+        Api.call(ctx, "PUT", "/me/player/volume?volume_percent=${percent.coerceIn(0, 100)}")
     }
 
     fun devices(ctx: Context): List<Device> {
