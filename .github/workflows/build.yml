@@ -32,3 +32,14 @@ jobs:
             --title "Meine Playlists $TAG" \
             --notes "APK herunterladen, aufs Handy kopieren und installieren." \
             --latest
+      # Alte Versionen entfernen – es bleibt nur das neueste Release
+      - name: Alte Releases löschen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          gh release list --limit 100 --json tagName -q '.[].tagName' | while read -r OLD; do
+            if [ "$OLD" != "$TAG" ]; then
+              gh release delete "$OLD" --cleanup-tag --yes
+            fi
+          done
