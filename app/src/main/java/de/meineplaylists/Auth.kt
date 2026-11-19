@@ -17,7 +17,14 @@ object Auth {
     // Spotify erlaubt nur HTTPS oder Loopback-IPs. Die WebView fängt diese Adresse ab, es läuft kein Server.
     const val REDIRECT_URI = "http://127.0.0.1:8888/callback"
     private const val SCOPES = "playlist-read-private playlist-read-collaborative " +
-        "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+        "user-read-playback-state user-modify-playback-state user-read-currently-playing " +
+        "user-library-read user-top-read user-read-recently-played"
+
+    /** true, wenn das gespeicherte Login alle aktuell benötigten Rechte hat (sonst neu anmelden). */
+    fun hasAllScopes(ctx: Context): Boolean {
+        val granted = prefs(ctx).getString("scope", null)?.split(" ")?.toSet() ?: return false
+        return SCOPES.split(" ").all { it in granted }
+    }
 
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences("auth", Context.MODE_PRIVATE)
 
@@ -89,6 +96,7 @@ object Auth {
             .putString("access_token", json.getString("access_token"))
             .putLong("expires_at", System.currentTimeMillis() + json.optLong("expires_in", 3600) * 1000)
         json.optString("refresh_token").takeIf { it.isNotBlank() }?.let { e.putString("refresh_token", it) }
+        json.optString("scope").takeIf { it.isNotBlank() }?.let { e.putString("scope", it) }
         e.apply()
     }
 

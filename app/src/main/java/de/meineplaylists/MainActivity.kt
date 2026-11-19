@@ -2,7 +2,9 @@ package de.meineplaylists
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -12,30 +14,35 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 
-/**
- * Eine einzige Ansicht wie bei einem klassischen MP3-Player:
- * oben der Bildschirm mit Menüs bzw. „Jetzt läuft“, unten das Klickrad.
- */
-class MainActivity : Activity(), ClickWheelView.Listener {
+class MainActivity : Activity() {
 
     // ---------- Seiten ----------
-    private abstract class Page(val title: String) { var sel = 0 }
-    private class RootPage : Page("Meine Playlists")
-    private class PlaylistsPage : Page("Playlists")
-    private class TracksPage(val pl: Playlist) : Page(pl.name)
-    private class NowPage : Page("Jetzt läuft")
+    private abstract class Page(val title: String) { var scroll = 0 }
+    private class RootPage : Page("Meine Musik")
+    private class OwnedPage : Page("Meine Playlists")
+    private class FollowedPage : Page("Gefolgte Playlists")
+    private class PlaylistPage(val pl: Playlist) : Page(pl.name)
+    private class ListPage(title: String, val key: String, val loader: (Context) -> List<Track>) : Page(title)
+    private class RecoPage : Page("Empfehlungen")
     private class SettingsPage : Page("Einstellungen")
+    private class NowPage : Page("Jetzt läuft")
 
     private class Row(
         val title: String,
         val sub: String? = null,
+        val icon: Int = 0,
+        val tint: Int = 0,
+        val image: String? = null,
+        val showImage: Boolean = false,
         val chevron: Boolean = true,
         val uri: String? = null,
         val dim: Boolean = false,
@@ -48,20 +55,23 @@ class MainActivity : Activity(), ClickWheelView.Listener {
     // ---------- Daten ----------
     private var playlists: List<Playlist>? = null
     private var loadingPlaylists = false
-    private val tracks = HashMap<String, List<Track>>()
-    private val loadingTracks = HashSet<String>()
+    private val lists = HashMap<String, List<Track>>()
+    private val loading = HashSet<String>()
 
     private var np: NowPlaying? = null
     private var npAt = 0L
-    private var volume: Int? = null
-    private var volumeShownUntil = 0L
-    private var volumeSendPending = false
+    private var userDraggingVolume = false
 
     // ---------- Views ----------
+    private lateinit var back: View
     private lateinit var headerTitle: TextView
-    private lateinit var headerState: ImageView
     private lateinit var list: ListView
     private lateinit var nowView: View
+    private lateinit var mini: View
+    private lateinit var miniCover: ImageView
+    private lateinit var miniTitle: TextView
+    private lateinit var miniSub: TextView
+    private lateinit var miniPlay: ImageButton
     private lateinit var npCover: ImageView
     private lateinit var npTitle: TextView
     private lateinit var npArtist: TextView
@@ -69,6 +79,8 @@ class MainActivity : Activity(), ClickWheelView.Listener {
     private lateinit var npProgress: ProgressBar
     private lateinit var npLeft: TextView
     private lateinit var npRight: TextView
+    private lateinit var npPlay: ImageButton
+    private lateinit var npVolume: SeekBar
 
     private lateinit var remote: Remote
     private val adapter = RowAdapter()
@@ -81,7 +93,7 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         override fun run() {
             if (!running) return
             if (tickCount++ % 4 == 0) fetchNowPlaying()
-            if (stack.lastOrNull() is NowPage) renderNow()
+            if (current() is NowPage) renderNowProgress()
             handler.postDelayed(this, 1000)
         }
     }
@@ -89,10 +101,15 @@ class MainActivity : Activity(), ClickWheelView.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        back = findViewById(R.id.back)
         headerTitle = findViewById(R.id.header_title)
-        headerState = findViewById(R.id.header_state)
         list = findViewById(R.id.list)
         nowView = findViewById(R.id.now)
+        mini = findViewById(R.id.mini)
+        miniCover = findViewById(R.id.mini_cover)
+        miniTitle = findViewById(R.id.mini_title)
+        miniSub = findViewById(R.id.mini_sub)
+        miniPlay = findViewById(R.id.mini_play)
         npCover = findViewById(R.id.np_cover)
         npTitle = findViewById(R.id.np_title)
         npArtist = findViewById(R.id.np_artist)
@@ -100,22 +117,38 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         npProgress = findViewById(R.id.np_progress)
         npLeft = findViewById(R.id.np_left)
         npRight = findViewById(R.id.np_right)
-        findViewById<ClickWheelView>(R.id.wheel).listener = this
+        npPlay = findViewById(R.id.np_play)
+        npVolume = findViewById(R.id.np_volume)
 
         remote = Remote(this, afterAction = { handler.postDelayed({ fetchNowPlaying() }, 600) }, onLoggedOut = {
             Auth.logout(this); resetToRoot()
         })
 
+        back.setOnClickListener { goBack() }
         list.adapter = adapter
-        list.setOnItemClickListener { _, _, pos, _ ->
-            current().sel = pos
-            adapter.notifyDataSetChanged()
-            rows.getOrNull(pos)?.action?.invoke()
-        }
+        list.setOnItemClickListener { _, _, pos, _ -> rows.getOrNull(pos)?.action?.invoke() }
+
+        mini.setOnClickListener { if (current() !is NowPage) push(NowPage()) }
+        findViewById<View>(R.id.mini_prev).setOnClickListener { prev() }
+        findViewById<View>(R.id.mini_next).setOnClickListener { next() }
+        miniPlay.setOnClickListener { playPause() }
+        findViewById<View>(R.id.np_prev).setOnClickListener { prev() }
+        findViewById<View>(R.id.np_next).setOnClickListener { next() }
+        npPlay.setOnClickListener { playPause() }
+        npVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, value: Int, fromUser: Boolean) {}
+            override fun onStartTrackingTouch(sb: SeekBar) { userDraggingVolume = true }
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                userDraggingVolume = false
+                val v = sb.progress
+                remote.withDevice { Spotify.setVolume(this, v) }
+            }
+        })
 
         AuthServer.listener = loginListener
         stack.add(RootPage())
         render()
+        renderPlayer()
     }
 
     override fun onResume() {
@@ -133,6 +166,7 @@ class MainActivity : Activity(), ClickWheelView.Listener {
 
     override fun onPause() {
         super.onPause()
+        current().scroll = list.firstVisiblePosition
         running = false
         handler.removeCallbacks(ticker)
     }
@@ -147,9 +181,9 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         setIntent(intent) // Rückkehr aus dem Browser (meineplaylists://login)
     }
 
-    @Deprecated("Zurück-Taste = MENU")
+    @Deprecated("Zurück-Taste")
     override fun onBackPressed() {
-        if (stack.size > 1) onMenu() else super.onBackPressed()
+        if (stack.size > 1) goBack() else super.onBackPressed()
     }
 
     private fun startTicker() {
@@ -163,15 +197,24 @@ class MainActivity : Activity(), ClickWheelView.Listener {
     private fun current() = stack.last()
 
     private fun push(p: Page) {
+        current().scroll = list.firstVisiblePosition
         stack.add(p)
         render()
+        list.setSelection(0)
+    }
+
+    private fun goBack() {
+        if (stack.size <= 1) return
+        stack.removeAt(stack.size - 1)
+        render()
+        list.setSelection(current().scroll)
     }
 
     private fun resetToRoot() {
         stack.clear()
         stack.add(RootPage())
         playlists = null
-        tracks.clear()
+        lists.clear()
         Spotify.clearCache()
         render()
     }
@@ -179,130 +222,175 @@ class MainActivity : Activity(), ClickWheelView.Listener {
     private fun render() {
         val page = current()
         headerTitle.text = page.title
+        back.visibility = if (stack.size > 1) View.VISIBLE else View.GONE
         if (page is NowPage) {
             list.visibility = View.GONE
             nowView.visibility = View.VISIBLE
+            mini.visibility = View.GONE
             renderNow()
         } else {
             nowView.visibility = View.GONE
             list.visibility = View.VISIBLE
+            mini.visibility = if (Auth.isLoggedIn(this)) View.VISIBLE else View.GONE
             rows = rowsFor(page)
-            page.sel = page.sel.coerceIn(0, (rows.size - 1).coerceAtLeast(0))
             adapter.notifyDataSetChanged()
-            ensureVisible(page.sel)
         }
-        renderHeaderState()
     }
 
+    // Kachelfarben fürs Hauptmenü
+    private val pink = 0xFFE0527A.toInt()
+    private val green = 0xFF2FBF7A.toInt()
+    private val blue = 0xFF3D7BE0.toInt()
+    private val orange = 0xFFE8873A.toInt()
+    private val violet = 0xFF8B5CF6.toInt()
+    private val grey = 0xFF4A4B52.toInt()
+
+    private fun loadingRow() = Row("Lädt …", chevron = false, dim = true)
+
     private fun rowsFor(page: Page): List<Row> = when (page) {
-        is RootPage -> when {
-            Auth.clientId(this) == null -> listOf(Row("Einrichten: Client-ID", "Mitteltaste drücken") { askClientId() })
-            !Auth.isLoggedIn(this) -> listOf(
-                Row("Mit Spotify anmelden") { openLogin() },
-                Row("Client-ID ändern") { askClientId() },
-            )
-            else -> listOf(
-                Row("Playlists") { push(PlaylistsPage()); if (playlists == null) loadPlaylists() },
-                Row("Jetzt läuft") { push(NowPage()) },
-                Row("Einstellungen") { push(SettingsPage()) },
-            )
-        }
-        is PlaylistsPage -> playlists?.let { pls ->
+        is RootPage -> rootRows()
+        is OwnedPage -> playlists?.filter { it.owned }?.let { pls ->
             if (pls.isEmpty()) listOf(Row("Keine eigenen Playlists", chevron = false, dim = true))
+            else pls.map { p -> Row(p.name, countText(p.total), image = p.imageUrl, showImage = true) { push(PlaylistPage(p)) } }
+        } ?: listOf(loadingRow())
+        is FollowedPage -> playlists?.filter { !it.owned }?.let { pls ->
+            if (pls.isEmpty()) listOf(Row("Du folgst keinen Playlists", chevron = false, dim = true))
             else pls.map { p ->
-                Row(p.name, if (p.total == 1) "1 Titel" else "${p.total} Titel") { openPlaylist(p) }
+                Row(p.name, listOfNotNull(p.ownerName?.let { "von $it" }, countText(p.total)).joinToString(" · "),
+                    image = p.imageUrl, showImage = true) { push(PlaylistPage(p)) }
             }
-        } ?: listOf(Row("Lädt …", chevron = false, dim = true))
-        is TracksPage -> tracks[page.pl.id]?.let { ts ->
-            listOf(
-                Row("Alle abspielen", chevron = false) { playPlaylist(page.pl, shuffle = false) },
-                Row("Zufällig", chevron = false) { playPlaylist(page.pl, shuffle = true) },
-            ) + ts.map { t ->
-                Row(t.name, t.subtitle, chevron = false, uri = t.uri, dim = !t.playable,
-                    action = if (t.playable) ({ playTrack(page.pl, t) }) else ({
-                        Toast.makeText(this, "Dieser Titel kann nicht abgespielt werden.", Toast.LENGTH_SHORT).show()
-                    }))
-            }
-        } ?: listOf(Row("Lädt …", chevron = false, dim = true))
+        } ?: listOf(loadingRow())
+        is PlaylistPage -> playlistRows(page.pl)
+        is ListPage -> trackListRows(page)
+        is RecoPage -> listOf(
+            Row("Deine Top-Songs", "Letzte 4 Wochen", R.drawable.ic_trend, orange) {
+                push(ListPage("Top · 4 Wochen", "top_short") { Spotify.topTracks(it, "short_term") })
+            },
+            Row("Deine Top-Songs", "Letzte 6 Monate", R.drawable.ic_trend, orange) {
+                push(ListPage("Top · 6 Monate", "top_medium") { Spotify.topTracks(it, "medium_term") })
+            },
+            Row("Deine Top-Songs", "Letztes Jahr", R.drawable.ic_trend, orange) {
+                push(ListPage("Top · 1 Jahr", "top_long") { Spotify.topTracks(it, "long_term") })
+            },
+            Row("Wiederentdecken", "Früher oft gehört, zuletzt kaum", R.drawable.ic_sparkle, violet) {
+                push(ListPage("Wiederentdecken", "rediscover") { Spotify.rediscover(it) })
+            },
+            Row("Zuletzt gehört", "Deine letzten 50 Titel", R.drawable.ic_history, blue) {
+                push(ListPage("Zuletzt gehört", "recent") { Spotify.recentTracks(it) })
+            },
+        )
         is SettingsPage -> listOf(
-            Row("Client-ID ändern") { askClientId() },
-            Row("Abmelden", chevron = false) { confirmLogout() },
+            Row("Neu anmelden", "Bei Problemen oder neuen Funktionen", R.drawable.ic_login, blue) { openLogin() },
+            Row("Client-ID ändern", Auth.clientId(this)?.let { it.take(8) + "…" }, R.drawable.ic_settings, grey) { askClientId() },
+            Row("Abmelden", null, R.drawable.ic_back, grey, chevron = false) { confirmLogout() },
         )
         else -> emptyList()
     }
 
-    private fun ensureVisible(pos: Int) {
-        list.post {
-            val first = list.firstVisiblePosition
-            val last = list.lastVisiblePosition
-            val rowH = (48 * resources.displayMetrics.density).toInt()
-            when {
-                last < 0 -> list.setSelection(pos)
-                pos <= first -> list.setSelectionFromTop(pos, 0)
-                pos >= last -> list.setSelectionFromTop(pos, list.height - list.paddingTop - list.paddingBottom - rowH)
+    private fun rootRows(): List<Row> {
+        if (Auth.clientId(this) == null) {
+            return listOf(Row("Einrichten", "Client-ID deiner Spotify-Developer-App eintragen", R.drawable.ic_settings, blue) { askClientId() })
+        }
+        if (!Auth.isLoggedIn(this)) {
+            return listOf(
+                Row("Mit Spotify anmelden", null, R.drawable.ic_login, green) { openLogin() },
+                Row("Client-ID ändern", null, R.drawable.ic_settings, grey) { askClientId() },
+            )
+        }
+        val out = ArrayList<Row>()
+        if (!Auth.hasAllScopes(this)) {
+            out += Row("Einmal neu anmelden", "Nötig für Lieblingssongs & Empfehlungen", R.drawable.ic_login, green) { openLogin() }
+        }
+        val pls = playlists
+        out += Row("Lieblingssongs", "Alle Titel mit „Gefällt mir“", R.drawable.ic_heart, pink) {
+            push(ListPage("Lieblingssongs", "liked") { Spotify.likedTracks(it) })
+        }
+        out += Row("Meine Playlists", pls?.count { it.owned }?.let { "$it Playlists" }, R.drawable.ic_queue, green) {
+            push(OwnedPage()); if (playlists == null) loadPlaylists()
+        }
+        out += Row("Gefolgte Playlists", pls?.count { !it.owned }?.let { "$it Playlists" }, R.drawable.ic_people, blue) {
+            push(FollowedPage()); if (playlists == null) loadPlaylists()
+        }
+        out += Row("Empfehlungen", "Aus deinen eigenen Hördaten", R.drawable.ic_sparkle, violet) { push(RecoPage()) }
+        out += Row("Einstellungen", null, R.drawable.ic_settings, grey) { push(SettingsPage()) }
+        return out
+    }
+
+    private fun countText(n: Int) = if (n == 1) "1 Titel" else "$n Titel"
+
+    private fun playRows(onPlay: () -> Unit, onShuffle: () -> Unit) = listOf(
+        Row("Abspielen", null, R.drawable.ic_play_white, green, chevron = false) { onPlay() },
+        Row("Zufällig", null, R.drawable.ic_shuffle, grey, chevron = false) { onShuffle() },
+    )
+
+    private fun playlistRows(pl: Playlist): List<Row> {
+        val head = playRows({ playPlaylist(pl, false) }, { playPlaylist(pl, true) })
+        if (!pl.owned) {
+            return head + Row(
+                "Titelliste nicht verfügbar",
+                "Spotify zeigt die Titel fremder Playlists nicht mehr an – Abspielen klappt trotzdem.",
+                chevron = false, dim = true,
+            )
+        }
+        val ts = lists[pl.id] ?: run { loadList(pl.id) { Spotify.tracks(it, pl.id) }; return head + loadingRow() }
+        return head + ts.map { t ->
+            trackRow(t) { remote.withDevice { d -> Spotify.play(this, d, pl.uri, t.position) }; push(NowPage()) }
+        }
+    }
+
+    private fun trackListRows(page: ListPage): List<Row> {
+        val ts = lists[page.key] ?: run { loadList(page.key, page.loader); return listOf(loadingRow()) }
+        if (ts.isEmpty()) return listOf(Row("Keine Titel gefunden", chevron = false, dim = true))
+        val uris = ts.filter { it.playable }.mapNotNull { it.uri }
+        return playRows({ playUris(uris, shuffle = false) }, { playUris(uris, shuffle = true) }) + ts.map { t ->
+            trackRow(t) {
+                val start = uris.indexOf(t.uri).coerceAtLeast(0)
+                playUris(uris.drop(start), shuffle = false)
             }
         }
     }
 
-    // ---------- Klickrad ----------
-    override fun onWheelScroll(steps: Int) {
-        val page = current()
-        if (page is NowPage) { changeVolume(steps * 2); return }
-        if (rows.isEmpty()) return
-        val next = (page.sel + steps).coerceIn(0, rows.size - 1)
-        if (next != page.sel) {
-            page.sel = next
-            adapter.notifyDataSetChanged()
-            ensureVisible(next)
+    private fun trackRow(t: Track, play: () -> Unit) = Row(
+        t.name, t.subtitle, image = t.imageUrl, showImage = true, chevron = false, uri = t.uri, dim = !t.playable,
+        action = if (t.playable) play else ({
+            Toast.makeText(this, "Dieser Titel kann nicht abgespielt werden.", Toast.LENGTH_SHORT).show()
+        }),
+    )
+
+    // ---------- Laden ----------
+    private fun loadPlaylists() {
+        if (loadingPlaylists) return
+        loadingPlaylists = true
+        bg {
+            try {
+                val pls = Spotify.allPlaylists(this)
+                ui { loadingPlaylists = false; playlists = pls; render() }
+            } catch (e: Exception) {
+                ui { loadingPlaylists = false; remote.showError(e) }
+            }
         }
     }
 
-    override fun onMenu() {
-        if (stack.size > 1) {
-            stack.removeAt(stack.size - 1)
-            render()
-        }
-    }
-
-    override fun onSelect() {
-        val page = current()
-        if (page is NowPage) { onPlayPause(); return }
-        rows.getOrNull(page.sel)?.action?.invoke()
-    }
-
-    override fun onPrev() { if (Auth.isLoggedIn(this)) remote.withDevice { Spotify.previous(this, it) } }
-    override fun onNext() { if (Auth.isLoggedIn(this)) remote.withDevice { Spotify.next(this, it) } }
-
-    override fun onPlayPause() {
-        if (!Auth.isLoggedIn(this)) return
-        val playing = np?.isPlaying == true
-        np = np?.copy(isPlaying = !playing, progressMs = currentProgress())
-        npAt = System.currentTimeMillis()
-        renderHeaderState()
-        if (current() is NowPage) renderNow()
-        remote.withDevice { d -> if (playing) Spotify.pause(this, d) else Spotify.resume(this, d) }
-    }
-
-    // ---------- Aktionen ----------
-    private fun openPlaylist(p: Playlist) {
-        push(TracksPage(p))
-        if (tracks[p.id] == null && loadingTracks.add(p.id)) {
-            bg {
-                try {
-                    val ts = Spotify.tracks(this, p.id)
-                    ui { loadingTracks.remove(p.id); tracks[p.id] = ts; if ((current() as? TracksPage)?.pl?.id == p.id) render() }
-                } catch (e: Exception) {
-                    ui { loadingTracks.remove(p.id); remote.showError(e) }
+    private fun loadList(key: String, loader: (Context) -> List<Track>) {
+        if (!loading.add(key)) return
+        bg {
+            try {
+                val ts = loader(this)
+                ui { loading.remove(key); lists[key] = ts; render() }
+            } catch (e: Exception) {
+                ui {
+                    loading.remove(key)
+                    lists[key] = emptyList()
+                    render()
+                    if (e is ApiException && e.status == 403 && !Auth.hasAllScopes(this)) {
+                        Toast.makeText(this, "Bitte im Hauptmenü einmal neu anmelden.", Toast.LENGTH_LONG).show()
+                    } else remote.showError(e)
                 }
             }
         }
     }
 
-    private fun playTrack(p: Playlist, t: Track) {
-        remote.withDevice { d -> Spotify.play(this, d, p.uri, t.position) }
-        push(NowPage())
-    }
-
+    // ---------- Abspielen ----------
     private fun playPlaylist(p: Playlist, shuffle: Boolean) {
         remote.withDevice { d ->
             try { Spotify.shuffle(this, shuffle, d) } catch (e: ApiException) { if (e.status == 404) throw e }
@@ -311,17 +399,26 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         push(NowPage())
     }
 
-    private fun loadPlaylists() {
-        if (loadingPlaylists) return
-        loadingPlaylists = true
-        bg {
-            try {
-                val pls = Spotify.myPlaylists(this)
-                ui { loadingPlaylists = false; playlists = pls; render() }
-            } catch (e: Exception) {
-                ui { loadingPlaylists = false; remote.showError(e) }
-            }
+    private fun playUris(uris: List<String>, shuffle: Boolean) {
+        if (uris.isEmpty()) return
+        val order = if (shuffle) uris.shuffled() else uris
+        remote.withDevice { d ->
+            try { Spotify.shuffle(this, false, d) } catch (e: ApiException) { if (e.status == 404) throw e }
+            Spotify.playUris(this, d, order)
         }
+        push(NowPage())
+    }
+
+    private fun prev() { if (Auth.isLoggedIn(this)) remote.withDevice { Spotify.previous(this, it) } }
+    private fun next() { if (Auth.isLoggedIn(this)) remote.withDevice { Spotify.next(this, it) } }
+
+    private fun playPause() {
+        if (!Auth.isLoggedIn(this)) return
+        val playing = np?.isPlaying == true
+        np = np?.copy(isPlaying = !playing, progressMs = currentProgress())
+        npAt = System.currentTimeMillis()
+        renderPlayer()
+        remote.withDevice { d -> if (playing) Spotify.pause(this, d) else Spotify.resume(this, d) }
     }
 
     // ---------- Jetzt läuft ----------
@@ -330,12 +427,11 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         bg {
             val r = try { Spotify.nowPlaying(this) } catch (_: Exception) { return@bg }
             ui {
+                val trackChanged = r?.trackUri != np?.trackUri
                 np = r
                 npAt = System.currentTimeMillis()
-                if (!volumeSendPending && System.currentTimeMillis() > volumeShownUntil) volume = r?.volume
-                renderHeaderState()
-                if (current() is NowPage) renderNow()
-                if (current() is TracksPage) adapter.notifyDataSetChanged()
+                renderPlayer()
+                if (trackChanged && current() !is NowPage) adapter.notifyDataSetChanged()
             }
         }
     }
@@ -346,62 +442,50 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         return if (n.durationMs > 0) p.coerceAtMost(n.durationMs) else p
     }
 
-    private fun renderHeaderState() {
+    private fun renderPlayer() {
         val n = np
-        if (n == null) headerState.visibility = View.INVISIBLE
-        else {
-            headerState.visibility = View.VISIBLE
-            headerState.setImageResource(if (n.isPlaying) R.drawable.ic_hplay else R.drawable.ic_hpause)
+        val playIcon = if (n?.isPlaying == true) R.drawable.ic_pause_dark else R.drawable.ic_play_dark
+        miniPlay.setImageResource(playIcon)
+        npPlay.setImageResource(playIcon)
+        if (n == null) {
+            miniTitle.text = "Nichts wird abgespielt"
+            miniSub.text = "Wähle eine Playlist"
+            Images.load(miniCover, null)
+        } else {
+            miniTitle.text = n.title
+            miniSub.text = n.subtitle
+            Images.load(miniCover, n.imageUrl)
         }
+        if (current() is NowPage) renderNow()
     }
 
     private fun renderNow() {
         val n = np
         if (n == null) {
             npTitle.text = "Nichts wird abgespielt"
-            npArtist.text = "Wähle eine Playlist aus"
+            npArtist.text = "Wähle eine Playlist oder einen Titel"
             npDevice.text = ""
             Images.load(npCover, null)
-            npProgress.progress = 0
-            npLeft.text = ""
-            npRight.text = ""
-            return
-        }
-        npTitle.text = n.title
-        npArtist.text = n.subtitle
-        npDevice.text = n.deviceName?.let { "auf $it" } ?: ""
-        Images.load(npCover, n.bigImageUrl ?: n.imageUrl)
-        if (System.currentTimeMillis() < volumeShownUntil && volume != null) {
-            npProgress.progress = volume!! * 10
-            npLeft.text = "Lautstärke"
-            npRight.text = "$volume %"
         } else {
-            val p = currentProgress()
-            npProgress.progress = if (n.durationMs > 0) (p * 1000 / n.durationMs).toInt() else 0
-            npLeft.text = formatDuration(p)
-            npRight.text = if (n.durationMs > 0) "-" + formatDuration(n.durationMs - p) else ""
+            npTitle.text = n.title
+            npArtist.text = n.subtitle
+            npDevice.text = n.deviceName?.let { "Wiedergabe auf $it" } ?: ""
+            Images.load(npCover, n.bigImageUrl ?: n.imageUrl)
+            if (!userDraggingVolume) n.volume?.let { npVolume.progress = it }
         }
+        npVolume.isEnabled = n?.volume != null
+        renderNowProgress()
     }
 
-    private fun changeVolume(delta: Int) {
-        val v = volume ?: np?.volume
-        if (v == null) {
-            Toast.makeText(this, "Lautstärke für dieses Gerät nicht verfügbar.", Toast.LENGTH_SHORT).show()
-            return
+    private fun renderNowProgress() {
+        val n = np
+        if (n == null || n.durationMs <= 0) {
+            npProgress.progress = 0; npLeft.text = ""; npRight.text = ""; return
         }
-        volume = (v + delta).coerceIn(0, 100)
-        volumeShownUntil = System.currentTimeMillis() + 1500
-        renderNow()
-        if (!volumeSendPending) {
-            volumeSendPending = true
-            handler.postDelayed({
-                val target = volume ?: return@postDelayed
-                bg {
-                    try { Spotify.setVolume(this, target) } catch (e: Exception) { ui { remote.showError(e) } }
-                    ui { volumeSendPending = false }
-                }
-            }, 250)
-        }
+        val p = currentProgress()
+        npProgress.progress = (p * 1000 / n.durationMs).toInt()
+        npLeft.text = formatDuration(p)
+        npRight.text = "-" + formatDuration(n.durationMs - p)
     }
 
     // ---------- Einrichtung & Login ----------
@@ -469,6 +553,7 @@ class MainActivity : Activity(), ClickWheelView.Listener {
                 np = null
                 autoPromptDone = true
                 resetToRoot()
+                renderPlayer()
             }
             .setNegativeButton("Abbrechen", null)
             .show()
@@ -483,30 +568,45 @@ class MainActivity : Activity(), ClickWheelView.Listener {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val v = convertView ?: LayoutInflater.from(parent.context).inflate(R.layout.item_row, parent, false)
             val row = rows[position]
-            val selected = position == current().sel
             val playing = row.uri != null && row.uri == np?.trackUri
             val title = v.findViewById<TextView>(R.id.title)
             val sub = v.findViewById<TextView>(R.id.sub)
-            val chev = v.findViewById<ImageView>(R.id.chevron)
+            val icon = v.findViewById<ImageView>(R.id.icon)
+            val dp = resources.displayMetrics.density
 
-            v.setBackgroundResource(if (selected) R.drawable.row_selected else android.R.color.transparent)
-            title.text = if (playing) "♪  ${row.title}" else row.title
+            title.text = row.title
             title.setTextColor(
                 when {
-                    selected -> 0xFFFFFFFF.toInt()
                     row.dim -> 0xFF6A6A72.toInt()
-                    playing -> 0xFF7FBCFF.toInt()
-                    else -> 0xFFE8E8EC.toInt()
+                    playing -> getColor(R.color.accent)
+                    else -> 0xFFFFFFFF.toInt()
                 }
             )
             if (row.sub.isNullOrBlank()) sub.visibility = View.GONE
-            else {
-                sub.visibility = View.VISIBLE
-                sub.text = row.sub
-                sub.setTextColor(if (selected) 0xDDFFFFFF.toInt() else 0xFF8A8A92.toInt())
+            else { sub.visibility = View.VISIBLE; sub.text = row.sub }
+
+            when {
+                row.icon != 0 -> {
+                    icon.visibility = View.VISIBLE
+                    icon.tag = null
+                    icon.setBackgroundResource(R.drawable.tile_bg)
+                    icon.backgroundTintList = ColorStateList.valueOf(row.tint)
+                    icon.scaleType = ImageView.ScaleType.FIT_CENTER
+                    val pad = (13 * dp).toInt()
+                    icon.setPadding(pad, pad, pad, pad)
+                    icon.setImageResource(row.icon)
+                }
+                row.showImage -> {
+                    icon.visibility = View.VISIBLE
+                    icon.setBackgroundColor(getColor(R.color.surface))
+                    icon.backgroundTintList = null
+                    icon.scaleType = ImageView.ScaleType.CENTER_CROP
+                    icon.setPadding(0, 0, 0, 0)
+                    Images.load(icon, row.image)
+                }
+                else -> { icon.visibility = View.GONE; icon.tag = null }
             }
-            chev.visibility = if (row.chevron) View.VISIBLE else View.INVISIBLE
-            chev.alpha = if (selected) 1f else 0.7f
+            v.findViewById<View>(R.id.chevron).visibility = if (row.chevron) View.VISIBLE else View.GONE
             return v
         }
     }

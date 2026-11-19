@@ -5,7 +5,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
-data class Playlist(val id: String, val name: String, val uri: String, val imageUrl: String?, val total: Int)
+data class Playlist(
+    val id: String, val name: String, val uri: String, val imageUrl: String?, val total: Int,
+    val owned: Boolean, val ownerName: String?,
+)
 
 data class Track(
     val uri: String?, val name: String, val subtitle: String, val durationMs: Long,
@@ -60,8 +63,8 @@ object Spotify {
         if (item.str("type") == "episode") image(item.optJSONArray("images"), Size.S)
         else image(item.optJSONObject("album")?.optJSONArray("images"), Size.S)
 
-    /** Nur Playlists, deren Besitzer der angemeldete Nutzer ist. */
-    fun myPlaylists(ctx: Context): List<Playlist> {
+    /** Alle Playlists in der Bibliothek – eigene (owned) und gefolgte. */
+    fun allPlaylists(ctx: Context): List<Playlist> {
         val me = myId(ctx)
         val out = ArrayList<Playlist>()
         var next: String? = "/me/playlists?limit=50"
@@ -70,16 +73,80 @@ object Spotify {
             val items = page.optJSONArray("items") ?: JSONArray()
             for (i in 0 until items.length()) {
                 val p = items.optJSONObject(i) ?: continue
-                if (p.optJSONObject("owner")?.str("id") != me) continue
+                val owner = p.optJSONObject("owner")
                 val id = p.str("id") ?: continue
                 val uri = p.str("uri") ?: continue
                 // Feld heißt seit 2026 "items", früher "tracks"
                 val count = (p.optJSONObject("items") ?: p.optJSONObject("tracks"))?.optInt("total") ?: 0
-                out += Playlist(id, p.str("name") ?: "Ohne Namen", uri, image(p.optJSONArray("images"), Size.M), count)
+                out += Playlist(
+                    id, p.str("name") ?: "Ohne Namen", uri, image(p.optJSONArray("images"), Size.M), count,
+                    owned = owner?.str("id") == me || p.optBoolean("collaborative"),
+                    ownerName = owner?.str("display_name") ?: owner?.str("id"),
+                )
             }
             next = page.str("next")
         }
         return out
+    }
+
+    private fun parseTrack(t: JSONObject, position: Int, local: Boolean = false): Track {
+        val uri = t.str("uri")
+        return Track(
+            uri = uri,
+            name = t.str("name") ?: "Unbekannt",
+            subtitle = subtitleOf(t),
+            durationMs = t.optLong("duration_ms"),
+            imageUrl = smallImageOf(t),
+            position = position,
+            playable = uri != null && !local && !t.optBoolean("is_local") && t.optBoolean("is_playable", true),
+        )
+    }
+
+    /** Lieblingssongs („Gefällt mir“). Begrenzt, damit das Kontingent der Dev-App nicht leerläuft. */
+    fun likedTracks(ctx: Context, max: Int = 500): List<Track> {
+        val out = ArrayList<Track>()
+        var next: String? = "/me/tracks?limit=50"
+        while (next != null && out.size < max) {
+            val page = Api.get(ctx, next) ?: break
+            val items = page.optJSONArray("items") ?: JSONArray()
+            for (i in 0 until items.length()) {
+                val t = items.optJSONObject(i)?.optJSONObject("track") ?: continue
+                out += parseTrack(t, out.size)
+            }
+            next = page.str("next")
+        }
+        return out
+    }
+
+    /** range: short_term (≈4 Wochen), medium_term (≈6 Monate), long_term (≈1 Jahr) */
+    fun topTracks(ctx: Context, range: String): List<Track> {
+        val items = Api.get(ctx, "/me/top/tracks?limit=50&time_range=$range")?.optJSONArray("items") ?: return emptyList()
+        return (0 until items.length()).mapNotNull { i -> items.optJSONObject(i)?.let { parseTrack(it, i) } }
+    }
+
+    fun recentTracks(ctx: Context): List<Track> {
+        val items = Api.get(ctx, "/me/player/recently-played?limit=50")?.optJSONArray("items") ?: return emptyList()
+        val seen = HashSet<String>()
+        val out = ArrayList<Track>()
+        for (i in 0 until items.length()) {
+            val t = items.optJSONObject(i)?.optJSONObject("track") ?: continue
+            val uri = t.str("uri") ?: continue
+            if (seen.add(uri)) out += parseTrack(t, out.size)
+        }
+        return out
+    }
+
+    /** Früher oft gehört (≈1 Jahr), in den letzten Monaten aber nicht mehr. */
+    fun rediscover(ctx: Context): List<Track> {
+        val recent = (topTracks(ctx, "short_term") + topTracks(ctx, "medium_term")).mapNotNull { it.uri }.toSet()
+        return topTracks(ctx, "long_term").filter { it.uri !in recent }
+    }
+
+    /** Spielt eine Liste von Titeln (für Listen ohne Playlist-Kontext, z. B. Lieblingssongs). */
+    fun playUris(ctx: Context, deviceId: String?, uris: List<String>) {
+        val arr = JSONArray()
+        uris.take(100).forEach { arr.put(it) }
+        Api.call(ctx, "PUT", "/me/player/play" + dev(deviceId), JSONObject().put("uris", arr))
     }
 
     fun tracks(ctx: Context, playlistId: String): List<Track> {
@@ -93,17 +160,7 @@ object Spotify {
                 val position = pos++
                 val entry = items.optJSONObject(i) ?: continue
                 val t = entry.optJSONObject("item") ?: entry.optJSONObject("track") ?: continue
-                val uri = t.str("uri")
-                val local = entry.optBoolean("is_local") || t.optBoolean("is_local")
-                out += Track(
-                    uri = uri,
-                    name = t.str("name") ?: "Unbekannt",
-                    subtitle = subtitleOf(t),
-                    durationMs = t.optLong("duration_ms"),
-                    imageUrl = smallImageOf(t),
-                    position = position,
-                    playable = uri != null && !local && t.optBoolean("is_playable", true),
-                )
+                out += parseTrack(t, position, entry.optBoolean("is_local"))
             }
             next = page.str("next")
         }

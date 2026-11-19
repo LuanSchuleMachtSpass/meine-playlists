@@ -14,8 +14,8 @@
         <item name="android:colorPrimary">@color/bg</item>
         <item name="android:colorPrimaryDark">@color/bg</item>
         <item name="android:windowBackground">@color/bg</item>
-        <item name="android:statusBarColor">#4A4B50</item>
-        <item name="android:navigationBarColor">#2C2D31</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:textColorPrimary">@color/text</item>
         <item name="android:textColorSecondary">@color/text2</item>
         <item name="android:alertDialogTheme">@style/DialogTheme</item>
