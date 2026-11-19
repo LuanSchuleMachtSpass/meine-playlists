@@ -3,13 +3,13 @@ package de.meineplaylists
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.CookieManager
 import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -44,6 +44,7 @@ class MainActivity : Activity() {
         statusButton = findViewById(R.id.status_button)
         search = findViewById(R.id.search)
         playerBar = PlayerBar(this)
+        AuthServer.listener = loginListener
 
         list.adapter = adapter
         list.setOnItemClickListener { _, _, pos, _ ->
@@ -121,15 +122,40 @@ class MainActivity : Activity() {
             .show()
     }
 
+    /** Login im Standard-Browser; die App empfängt die Weiterleitung über AuthServer. */
     private fun openLogin() {
-        startActivityForResult(Intent(this, LoginActivity::class.java), REQ_LOGIN)
+        if (!AuthServer.start(this)) {
+            showStatus("Login-Empfänger konnte nicht gestartet werden (Port 8888 belegt?).", "Erneut versuchen") { openLogin() }
+            return
+        }
+        showStatus("Anmeldung läuft im Browser …", "Browser erneut öffnen") { openLogin() }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Auth.buildAuthUrl(this))))
+        } catch (e: Exception) {
+            AuthServer.stop()
+            showStatus("Kein Browser gefunden.", "Erneut versuchen") { openLogin() }
+        }
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_LOGIN && resultCode == RESULT_OK) {
-            Spotify.clearCache()
-            loaded = false
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent) // Rückkehr über meineplaylists://login – onResume erledigt den Rest
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (AuthServer.listener === loginListener) AuthServer.listener = null
+    }
+
+    private val loginListener: (String?) -> Unit = { error ->
+        if (!isFinishing && !isDestroyed) {
+            if (error == null) {
+                Spotify.clearCache()
+                loaded = false
+                ensureReady()
+            } else {
+                showStatus(error, "Erneut anmelden") { openLogin() }
+            }
         }
     }
 
@@ -173,7 +199,6 @@ class MainActivity : Activity() {
             .setPositiveButton("Abmelden") { _, _ ->
                 Auth.logout(this)
                 Spotify.clearCache()
-                CookieManager.getInstance().removeAllCookies(null)
                 all = emptyList()
                 adapter.items = emptyList()
                 loaded = false
@@ -216,7 +241,4 @@ class MainActivity : Activity() {
         }
     }
 
-    companion object {
-        private const val REQ_LOGIN = 1
-    }
 }
