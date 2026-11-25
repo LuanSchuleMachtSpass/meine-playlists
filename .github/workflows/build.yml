@@ -17,19 +17,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '8.10.2' }
       - run: gradle assembleRelease --no-daemon
-      - run: cp app/build/outputs/apk/release/app-release.apk MeinePlaylists.apk
+      - run: cp app/build/outputs/apk/release/app-release.apk LitePlayer.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: MeinePlaylists-apk
-          path: MeinePlaylists.apk
+          name: LitePlayer-apk
+          path: LitePlayer.apk
       # Veröffentlicht die APK als Release -> direkter Download-Link auf der Repo-Seite
       - name: Release erstellen
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.0.${{ github.run_number }}"
-          gh release create "$TAG" MeinePlaylists.apk \
-            --title "Meine Playlists $TAG" \
+          gh release create "$TAG" LitePlayer.apk \
+            --title "Lite Player $TAG" \
             --notes "APK herunterladen, aufs Handy kopieren und installieren." \
             --latest
       # Alte Versionen entfernen – es bleibt nur das neueste Release

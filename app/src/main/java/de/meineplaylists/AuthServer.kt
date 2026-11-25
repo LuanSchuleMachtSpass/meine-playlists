@@ -97,7 +97,7 @@ object AuthServer {
 
     private fun page(title: String, text: String) = """<!doctype html><html lang="de"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Meine Playlists</title>
+<title>Lite Player</title>
 <style>body{margin:0;background:#0F0F10;color:#fff;font-family:sans-serif;display:flex;min-height:100vh;
 align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box}
 h1{font-size:24px;margin:0 0 8px}p{color:#A0A0A8;margin:0 0 28px}

@@ -1,6 +1,6 @@
-# Meine Playlists
+# Lite Player
 
-Ein schlanker Android-Client für Spotify: **nur deine eigenen Playlists**, keine Startseite, keine Vorschläge, keine Werbung.
+Ein schlanker Android-Player, der Spotify fernsteuert: deine Playlists, Lieblingssongs und Empfehlungen aus deinen eigenen Hördaten – ohne Startseite und ohne Werbung. Inoffiziell, nicht mit Spotify verbunden.
 
 ## Was die App macht – und was nicht
 
