@@ -604,19 +604,35 @@ class MainActivity : Activity() {
         if (d.unknownSongs.isNotEmpty()) {
             out += playRows({ playTracks(d.unknownSongs, null, false) }, { playTracks(d.unknownSongs, null, true) })
             out += header("Neue Songs von Künstlern, die du hörst")
-            out += d.unknownSongs.map { t -> trackRow(t) { playTracks(d.unknownSongs, t, false) } }
+            val shown = if (moreSongs) d.unknownSongs else d.unknownSongs.take(PREVIEW)
+            out += shown.map { t -> trackRow(t) { playTracks(d.unknownSongs, t, false) } }
+            if (d.unknownSongs.size > PREVIEW) out += moreRow(moreSongs, d.unknownSongs.size) { moreSongs = !moreSongs; render() }
         }
         if (d.newArtists.isNotEmpty()) {
             out += header("Neue Künstler für dich")
-            out += d.newArtists.map { a -> Row(a.name, "Arbeitet mit Künstlern, die du magst", R.drawable.ic_mic, violet) { push(ArtistPage(a)) } }
+            val shown = if (moreArtists) d.newArtists else d.newArtists.take(PREVIEW)
+            out += shown.map { a -> Row(a.name, "Arbeitet mit Künstlern, die du magst", R.drawable.ic_mic, violet) { push(ArtistPage(a)) } }
+            if (d.newArtists.size > PREVIEW) out += moreRow(moreArtists, d.newArtists.size) { moreArtists = !moreArtists; render() }
         }
         out += header("Mehr")
         out += Row("Wiederentdecken", "Früher oft gehört, zuletzt kaum", R.drawable.ic_history, blue) {
             push(ListPage("Wiederentdecken", "rediscover") { Spotify.rediscover(it) })
         }
-        out += Row("Neu laden", "Andere Vorschläge", R.drawable.ic_sparkle, grey, chevron = false) { discover = null; render() }
+        out += Row("Neu laden", "Andere Vorschläge", R.drawable.ic_sparkle, grey, chevron = false) {
+            discover = null; moreSongs = false; moreArtists = false; render()
+        }
         return out
     }
+
+    private var moreSongs = false
+    private var moreArtists = false
+
+    /** „Mehr anzeigen“ / „Weniger anzeigen“ unter einem Abschnitt. */
+    private fun moreRow(expanded: Boolean, total: Int, toggle: () -> Unit) = Row(
+        if (expanded) "Weniger anzeigen" else "Mehr anzeigen",
+        if (expanded) null else "Alle $total ansehen",
+        if (expanded) R.drawable.ic_up else R.drawable.ic_chevron_white, grey, chevron = false,
+    ) { toggle() }
 
     private fun queueRows(): List<Row> {
         val song = LocalPlayerService.current()
@@ -1273,5 +1289,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_MUSIC = 42
+        private const val PREVIEW = 5
     }
 }
