@@ -52,7 +52,8 @@ class MainActivity : Activity() {
     private class PlaylistPage(val pl: Playlist) : Page(pl.name)
     private class ListPage(title: String, val key: String, val loader: (Context) -> List<Track>) : Page(title)
     private class ArtistListPage(title: String, val key: String, val loader: (Context) -> List<Artist>) : Page(title)
-    private class AlbumsPage(title: String, val range: String) : Page(title)
+    private class AlbumsPage(title: String, var range: String) : Page(title)
+    private class AlbumRecoPage : Page("Album-Empfehlungen")
     private class ArtistPage(val artist: Artist) : Page(artist.name)
     private class DiscoverPage : Page("Empfehlungen")
     private class StatsPage : Page("Deine Hördaten")
@@ -455,7 +456,8 @@ class MainActivity : Activity() {
                 Row(if (page.key.startsWith("top")) "${i + 1}. ${a.name}" else a.name, null, image = a.imageUrl, showImage = true) { push(ArtistPage(a)) }
             }
         } ?: run { loadArtistList(page.key, page.loader); listOf(loadingRow()) }
-        is AlbumsPage -> albumRows(page.range)
+        is AlbumsPage -> albumRows(page)
+        is AlbumRecoPage -> albumRecoRows()
         is ArtistPage -> artistRows(page.artist)
         is DiscoverPage -> discoverRows()
         is StatsPage -> statsRows()
@@ -501,6 +503,12 @@ class MainActivity : Activity() {
             }
             out += Row("Empfehlungen", "Neue Songs und Künstler für dich", R.drawable.ic_sparkle, violet) { push(DiscoverPage()) }
             out += Row("Deine Hördaten", "Top 50 Songs, Künstler und Alben", R.drawable.ic_stats, orange) { push(StatsPage()) }
+            out += Row("Top-Alben", "Deine meistgehörten Alben", R.drawable.ic_album, violet) {
+                push(AlbumsPage("Top-Alben", "medium_term"))
+            }
+            out += Row("Album-Empfehlungen", "Alben, die du noch nicht kennst", R.drawable.ic_album, pink) {
+                push(AlbumRecoPage())
+            }
         }
         out += Row("MP3s", "Musikdateien auf diesem Handy – auch offline", R.drawable.ic_library, teal) { openMp3s() }
         out += Row("Offline-Musik von Spotify", "Deine Downloads ohne Internet", R.drawable.ic_cloud_off, grey) { showOfflineInfo() }
@@ -557,12 +565,22 @@ class MainActivity : Activity() {
         return out
     }
 
-    private fun albumRows(range: String): List<Row> {
-        val ts = lists["top_$range"] ?: run { loadList("top_$range") { Spotify.topTracks(it, range) }; return listOf(loadingRow()) }
+    private val rangeLabels = linkedMapOf("short_term" to "4 Wochen", "medium_term" to "6 Monate", "long_term" to "1 Jahr")
+
+    private fun albumRows(page: AlbumsPage): List<Row> {
+        val range = page.range
+        // Zeitraum umschalten: 4 Wochen → 6 Monate → 1 Jahr
+        val switch = Row("Zeitraum: ${rangeLabels[range]}", "Tippen zum Wechseln", R.drawable.ic_history, grey, chevron = false) {
+            val keys = rangeLabels.keys.toList()
+            page.range = keys[(keys.indexOf(range) + 1) % keys.size]
+            render()
+            slideList(true)
+        }
+        val ts = lists["top_$range"] ?: run { loadList("top_$range") { Spotify.topTracks(it, range) }; return listOf(switch, loadingRow()) }
         val albums = ts.filter { it.albumId != null && it.albumUri != null }.groupBy { it.albumId!! }
             .values.sortedByDescending { it.size }
-        if (albums.isEmpty()) return listOf(Row("Noch keine Alben", chevron = false, dim = true))
-        return albums.mapIndexed { i, group ->
+        if (albums.isEmpty()) return listOf(switch, Row("Noch keine Alben", chevron = false, dim = true))
+        return listOf(switch) + albums.mapIndexed { i, group ->
             val t = group.first()
             Row(
                 "${i + 1}. ${t.albumName ?: "Album"}",
@@ -626,6 +644,48 @@ class MainActivity : Activity() {
 
     private var moreSongs = false
     private var moreArtists = false
+    private var moreAlbums = false
+    private var albumReco: List<Album>? = null
+
+    private fun albumRecoRows(): List<Row> {
+        val albums = albumReco ?: run { loadAlbumReco(); return listOf(Row("Suche Alben für dich …", chevron = false, dim = true)) }
+        if (albums.isEmpty()) return listOf(Row("Gerade keine Album-Empfehlungen", "Hör ein bisschen mehr Musik", chevron = false, dim = true))
+        val out = ArrayList<Row>()
+        out += header("Alben von Künstlern, die du hörst – und ähnlichen")
+        val shown = if (moreAlbums) albums else albums.take(PREVIEW_ALBUMS)
+        out += shown.map { a ->
+            Row(
+                a.name, listOfNotNull(a.artist?.name, a.year).joinToString(" · "),
+                image = a.imageUrl, showImage = true, chevron = false,
+                menu = {
+                    val items = ArrayList<Pair<String, () -> Unit>>()
+                    items += "Album abspielen" to { playContext(a.uri, false, null) }
+                    items += "Album zufällig" to { playContext(a.uri, true, null) }
+                    a.artist?.let { ar -> items += "Zum Künstler: ${ar.name}" to { push(ArtistPage(ar)) } }
+                    AlertDialog.Builder(this).setTitle(a.name)
+                        .setItems(items.map { it.first }.toTypedArray()) { _, i -> items[i].second() }.show()
+                },
+            ) { playContext(a.uri, false, null) }
+        }
+        if (albums.size > PREVIEW_ALBUMS) out += moreRow(moreAlbums, albums.size) { moreAlbums = !moreAlbums; render() }
+        out += Row("Neu laden", "Andere Vorschläge", R.drawable.ic_sparkle, grey, chevron = false) {
+            albumReco = null; moreAlbums = false; render()
+        }
+        out += Row("Tipp", "Halte ein Album gedrückt für mehr Optionen", chevron = false, dim = true)
+        return out
+    }
+
+    private fun loadAlbumReco() {
+        if (!loading.add("album_reco")) return
+        bg {
+            try {
+                val a = Spotify.albumRecommendations(this)
+                ui { loading.remove("album_reco"); albumReco = a; render() }
+            } catch (e: Exception) {
+                ui { loading.remove("album_reco"); albumReco = emptyList(); render(); scopeOrError(e) }
+            }
+        }
+    }
 
     /** „Mehr anzeigen“ / „Weniger anzeigen“ unter einem Abschnitt. */
     private fun moreRow(expanded: Boolean, total: Int, toggle: () -> Unit) = Row(
@@ -1290,5 +1350,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_MUSIC = 42
         private const val PREVIEW = 5
+        private const val PREVIEW_ALBUMS = 10
     }
 }

@@ -29,6 +29,11 @@ data class NowPlaying(
     val bigImageUrl: String? = null, val shuffle: Boolean = false, val repeat: String = "off",
 )
 
+data class Album(
+    val id: String, val name: String, val uri: String, val imageUrl: String?,
+    val artist: Artist?, val year: String?,
+)
+
 /** Ergebnis der eigenen Empfehlungen. */
 class Discover(val unknownSongs: List<Track>, val newArtists: List<Artist>)
 
@@ -164,6 +169,61 @@ object Spotify {
         }
         val newArtists = candidates.values.sortedByDescending { it.second }.map { it.first }.take(12)
         return Discover(unknown.values.toList().shuffled(), newArtists)
+    }
+
+    private fun parseAlbum(a: JSONObject?): Album? {
+        if (a == null) return null
+        return Album(
+            id = a.str("id") ?: return null,
+            name = a.str("name") ?: "Album",
+            uri = a.str("uri") ?: return null,
+            imageUrl = image(a.optJSONArray("images"), Size.M),
+            artist = parseArtist(a.optJSONArray("artists")?.optJSONObject(0)),
+            year = a.str("release_date")?.take(4),
+        )
+    }
+
+    /** Alben eines Künstlers über die Suche (ohne Compilations). */
+    private fun artistAlbums(ctx: Context, artist: Artist): List<Album> {
+        val q = URLEncoder.encode("artist:\"${artist.name}\"", "UTF-8")
+        val arr = Api.get(ctx, "/search?q=$q&type=album&limit=10")?.optJSONObject("albums")?.optJSONArray("items")
+            ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            if (o.str("album_type") == "compilation") return@mapNotNull null
+            parseAlbum(o)?.takeIf { it.artist?.id == artist.id }
+        }
+    }
+
+    /**
+     * Album-Empfehlungen: Alben deiner Künstler, aus denen du noch nichts gespeichert oder oft gehört hast,
+     * plus Alben von Künstlern, die mit ihnen zusammenarbeiten.
+     */
+    fun albumRecommendations(ctx: Context): List<Album> {
+        val knownAlbums = HashSet<String>()
+        (likedTracks(ctx, 300) + topTracks(ctx, "short_term") + topTracks(ctx, "medium_term") + topTracks(ctx, "long_term"))
+            .forEach { t -> t.albumId?.let { knownAlbums += it } }
+
+        val seeds = (topArtists(ctx, "short_term") + topArtists(ctx, "medium_term")).distinctBy { it.id }
+        val seedIds = seeds.map { it.id }.toSet()
+        val out = LinkedHashMap<String, Album>()
+        val collaborators = HashMap<String, Pair<Artist, Int>>()
+
+        for (seed in seeds.take(8)) {
+            val albums = try { artistAlbums(ctx, seed) } catch (_: Exception) { continue }
+            albums.filter { it.id !in knownAlbums }.take(3).forEach { out.putIfAbsent(it.id, it) }
+            // Mitwirkende Künstler aus den Songs dieses Künstlers sammeln
+            val songs = try { artistSongs(ctx, seed) } catch (_: Exception) { emptyList() }
+            for (t in songs) for (a in t.artists) {
+                if (a.id in seedIds) continue
+                collaborators[a.id] = a to ((collaborators[a.id]?.second ?: 0) + 1)
+            }
+        }
+        for (c in collaborators.values.sortedByDescending { it.second }.take(4)) {
+            val albums = try { artistAlbums(ctx, c.first) } catch (_: Exception) { continue }
+            albums.filter { it.id !in knownAlbums }.take(2).forEach { out.putIfAbsent(it.id, it) }
+        }
+        return out.values.toList().shuffled()
     }
 
     /** Aktuelle Spotify-Warteschlange (ohne den laufenden Titel). */
