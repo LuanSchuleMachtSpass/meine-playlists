@@ -13,7 +13,10 @@ data class Playlist(
 data class Track(
     val uri: String?, val name: String, val subtitle: String, val durationMs: Long,
     val imageUrl: String?, val position: Int, val playable: Boolean,
+    val artistIds: List<String> = emptyList(),
 )
+
+data class Artist(val id: String, val name: String, val uri: String, val imageUrl: String?)
 
 data class NowPlaying(
     val isPlaying: Boolean, val title: String, val subtitle: String,
@@ -99,7 +102,55 @@ object Spotify {
             imageUrl = smallImageOf(t),
             position = position,
             playable = uri != null && !local && !t.optBoolean("is_local") && t.optBoolean("is_playable", true),
+            artistIds = t.optJSONArray("artists")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.str("id") }
+            } ?: emptyList(),
         )
+    }
+
+    private fun parseArtist(a: JSONObject?): Artist? {
+        if (a == null) return null
+        return Artist(
+            id = a.str("id") ?: return null,
+            name = a.str("name") ?: "Unbekannt",
+            uri = a.str("uri") ?: return null,
+            imageUrl = image(a.optJSONArray("images"), Size.M),
+        )
+    }
+
+    /** Meistgehörte Künstler (≈6 Monate) zuerst, danach gefolgte Künstler. */
+    fun favoriteArtists(ctx: Context): List<Artist> {
+        val out = LinkedHashMap<String, Artist>()
+        Api.get(ctx, "/me/top/artists?limit=50&time_range=medium_term")?.optJSONArray("items")?.let { arr ->
+            for (i in 0 until arr.length()) parseArtist(arr.optJSONObject(i))?.let { out.putIfAbsent(it.id, it) }
+        }
+        try {
+            var next: String? = "/me/following?type=artist&limit=50"
+            var pages = 0
+            while (next != null && pages++ < 4) {
+                val artists = Api.get(ctx, next)?.optJSONObject("artists") ?: break
+                val arr = artists.optJSONArray("items") ?: JSONArray()
+                for (i in 0 until arr.length()) parseArtist(arr.optJSONObject(i))?.let { out.putIfAbsent(it.id, it) }
+                next = artists.str("next")
+            }
+        } catch (e: ApiException) {
+            // gefolgte Künstler sind optional – Top-Künstler reichen notfalls
+            if (out.isEmpty()) throw e
+        }
+        return out.values.toList()
+    }
+
+    /** Suche nach Songs und Künstlern. */
+    fun search(ctx: Context, query: String): Pair<List<Artist>, List<Track>> {
+        val q = URLEncoder.encode(query, "UTF-8")
+        val j = Api.get(ctx, "/search?q=$q&type=artist,track&limit=10") ?: return emptyList<Artist>() to emptyList()
+        val artists = j.optJSONObject("artists")?.optJSONArray("items")?.let { arr ->
+            (0 until arr.length()).mapNotNull { parseArtist(arr.optJSONObject(it)) }
+        } ?: emptyList()
+        val tracks = j.optJSONObject("tracks")?.optJSONArray("items")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let { parseTrack(it, i) } }
+        } ?: emptyList()
+        return artists to tracks
     }
 
     /** Lieblingssongs („Gefällt mir“). Begrenzt, damit das Kontingent der Dev-App nicht leerläuft. */

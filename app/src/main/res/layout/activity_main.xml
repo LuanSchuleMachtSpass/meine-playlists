@@ -15,6 +15,15 @@
             android:textColor="@color/text" android:textSize="26sp" android:textStyle="bold" />
     </LinearLayout>
 
+    <!-- Suchleiste (nur im Hauptmenü) -->
+    <EditText android:id="@+id/search" android:layout_width="match_parent" android:layout_height="46dp"
+        android:layout_marginStart="16dp" android:layout_marginEnd="16dp" android:layout_marginBottom="8dp"
+        android:background="@drawable/field_bg" android:drawableStart="@drawable/ic_search"
+        android:drawablePadding="10dp" android:hint="Songs, Künstler, MP3s suchen"
+        android:imeOptions="actionSearch" android:inputType="text" android:paddingStart="12dp"
+        android:paddingEnd="12dp" android:singleLine="true" android:textColor="@color/text"
+        android:textColorHint="@color/text2" android:textSize="15sp" />
+
     <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
         <ListView android:id="@+id/list" android:layout_width="match_parent" android:layout_height="match_parent"
             android:clipToPadding="false" android:divider="@null" android:dividerHeight="0dp"

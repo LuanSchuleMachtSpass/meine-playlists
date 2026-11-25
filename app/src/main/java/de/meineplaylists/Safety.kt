@@ -72,6 +72,7 @@ class SleepReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext
         val result = goAsync()
+        LocalPlayerService.command(app, LocalPlayerService.ACTION_PAUSE)
         Thread {
             try {
                 Spotify.pause(app, null)

@@ -18,7 +18,7 @@ object Auth {
     const val REDIRECT_URI = "http://127.0.0.1:8888/callback"
     private const val SCOPES = "playlist-read-private playlist-read-collaborative " +
         "user-read-playback-state user-modify-playback-state user-read-currently-playing " +
-        "user-library-read user-top-read user-read-recently-played"
+        "user-library-read user-top-read user-read-recently-played user-follow-read"
 
     /** true, wenn das gespeicherte Login alle aktuell benötigten Rechte hat (sonst neu anmelden). */
     fun hasAllScopes(ctx: Context): Boolean {
