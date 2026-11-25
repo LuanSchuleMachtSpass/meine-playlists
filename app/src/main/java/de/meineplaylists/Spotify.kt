@@ -10,20 +10,27 @@ data class Playlist(
     val owned: Boolean, val ownerName: String?,
 )
 
+data class Artist(val id: String, val name: String, val uri: String, val imageUrl: String?)
+
 data class Track(
     val uri: String?, val name: String, val subtitle: String, val durationMs: Long,
     val imageUrl: String?, val position: Int, val playable: Boolean,
-    val artistIds: List<String> = emptyList(),
-)
-
-data class Artist(val id: String, val name: String, val uri: String, val imageUrl: String?)
+    val artists: List<Artist> = emptyList(),
+    val albumId: String? = null, val albumName: String? = null, val albumUri: String? = null,
+    val albumImage: String? = null,
+) {
+    val artistIds: List<String> get() = artists.map { it.id }
+}
 
 data class NowPlaying(
     val isPlaying: Boolean, val title: String, val subtitle: String,
     val imageUrl: String?, val deviceName: String?, val trackUri: String?,
     val progressMs: Long = 0, val durationMs: Long = 0, val volume: Int? = null,
-    val bigImageUrl: String? = null,
+    val bigImageUrl: String? = null, val shuffle: Boolean = false, val repeat: String = "off",
 )
+
+/** Ergebnis der eigenen Empfehlungen. */
+class Discover(val unknownSongs: List<Track>, val newArtists: List<Artist>)
 
 data class Device(val id: String, val name: String, val type: String)
 
@@ -102,10 +109,79 @@ object Spotify {
             imageUrl = smallImageOf(t),
             position = position,
             playable = uri != null && !local && !t.optBoolean("is_local") && t.optBoolean("is_playable", true),
-            artistIds = t.optJSONArray("artists")?.let { arr ->
-                (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.str("id") }
+            artists = t.optJSONArray("artists")?.let { arr ->
+                (0 until arr.length()).mapNotNull { parseArtist(arr.optJSONObject(it)) }
             } ?: emptyList(),
+            albumId = t.optJSONObject("album")?.str("id"),
+            albumName = t.optJSONObject("album")?.str("name"),
+            albumUri = t.optJSONObject("album")?.str("uri"),
+            albumImage = image(t.optJSONObject("album")?.optJSONArray("images"), Size.M),
         )
+    }
+
+    fun topArtists(ctx: Context, range: String): List<Artist> {
+        val arr = Api.get(ctx, "/me/top/artists?limit=50&time_range=$range")?.optJSONArray("items") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { parseArtist(arr.optJSONObject(it)) }
+    }
+
+    /** Beliebte Songs eines Künstlers über die Suche (Top-Tracks-Endpunkt gibt es für Dev-Apps nicht mehr). */
+    fun artistSongs(ctx: Context, artist: Artist): List<Track> {
+        val q = URLEncoder.encode("artist:\"${artist.name}\"", "UTF-8")
+        val arr = Api.get(ctx, "/search?q=$q&type=track&limit=10")?.optJSONObject("tracks")?.optJSONArray("items")
+            ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let { parseTrack(it, i) } }
+            .filter { artist.id in it.artistIds }
+    }
+
+    /**
+     * Eigene Empfehlungen: unbekannte Songs von Künstlern, die du hörst,
+     * und neue Künstler, die mit ihnen zusammenarbeiten.
+     */
+    fun discover(ctx: Context): Discover {
+        val knownSongs = HashSet<String>()
+        fun addKnown(ts: List<Track>) = ts.forEach { t -> t.uri?.let { knownSongs += it } }
+        addKnown(likedTracks(ctx, 300))
+        addKnown(recentTracks(ctx))
+        val topShort = topTracks(ctx, "short_term"); addKnown(topShort)
+        addKnown(topTracks(ctx, "medium_term"))
+        addKnown(topTracks(ctx, "long_term"))
+
+        val knownArtists = HashSet<String>()
+        val seeds = topArtists(ctx, "short_term").ifEmpty { topArtists(ctx, "medium_term") }
+        seeds.forEach { knownArtists += it.id }
+        topArtists(ctx, "long_term").forEach { knownArtists += it.id }
+
+        val unknown = LinkedHashMap<String, Track>()
+        val candidates = HashMap<String, Pair<Artist, Int>>()
+        for (seed in seeds.take(8)) {
+            val songs = try { artistSongs(ctx, seed) } catch (_: Exception) { continue }
+            songs.filter { it.uri != null && it.uri !in knownSongs }.take(4).forEach { unknown.putIfAbsent(it.uri!!, it) }
+            for (t in songs) for (a in t.artists) {
+                if (a.id in knownArtists) continue
+                val prev = candidates[a.id]
+                candidates[a.id] = a to ((prev?.second ?: 0) + 1)
+            }
+        }
+        val newArtists = candidates.values.sortedByDescending { it.second }.map { it.first }.take(12)
+        return Discover(unknown.values.toList().shuffled(), newArtists)
+    }
+
+    /** Aktuelle Spotify-Warteschlange (ohne den laufenden Titel). */
+    fun queue(ctx: Context): List<Track> {
+        val arr = Api.get(ctx, "/me/player/queue")?.optJSONArray("queue") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let { parseTrack(it, i) } }
+    }
+
+    fun addToQueue(ctx: Context, deviceId: String?, uri: String) {
+        val u = URLEncoder.encode(uri, "UTF-8")
+        Api.call(ctx, "POST", "/me/player/queue?uri=$u" + dev(deviceId, first = false))
+    }
+
+    fun seek(ctx: Context, ms: Long) { Api.call(ctx, "PUT", "/me/player/seek?position_ms=$ms") }
+
+    /** state: off, context, track */
+    fun repeat(ctx: Context, state: String, deviceId: String?) {
+        Api.call(ctx, "PUT", "/me/player/repeat?state=$state" + dev(deviceId, first = false))
     }
 
     private fun parseArtist(a: JSONObject?): Artist? {
@@ -237,7 +313,9 @@ object Spotify {
             progressMs = j.optLong("progress_ms"),
             durationMs = item.optLong("duration_ms"),
             volume = volume,
-            bigImageUrl = big,
+            bigImageUrl = image(item.optJSONObject("album")?.optJSONArray("images"), Size.L) ?: big,
+            shuffle = j.optBoolean("shuffle_state"),
+            repeat = j.str("repeat_state") ?: "off",
         )
     }
 

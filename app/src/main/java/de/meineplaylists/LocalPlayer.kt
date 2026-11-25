@@ -91,6 +91,22 @@ class LocalPlayerService : Service() {
             if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
         }
 
+        /** Fügt einen Titel direkt nach dem aktuellen ein. */
+        fun addNext(song: LocalSong) {
+            if (!isActive) return
+            queue = queue.toMutableList().apply { add((index + 1).coerceAtMost(size), song) }
+        }
+
+        /** Hängt einen Titel ans Ende der Warteschlange. */
+        fun addEnd(song: LocalSong) {
+            if (!isActive) return
+            queue = queue + song
+        }
+
+        fun seekTo(ms: Long) {
+            try { player?.seekTo(ms.toInt()) } catch (_: Exception) {}
+        }
+
         fun command(ctx: Context, action: String) {
             if (!isActive) return
             try { ctx.startService(Intent(ctx, LocalPlayerService::class.java).setAction(action)) } catch (_: Exception) {}
