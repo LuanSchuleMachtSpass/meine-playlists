@@ -140,9 +140,6 @@
                     android:layout_weight="1" android:max="100" android:progressDrawable="@drawable/seek_track"
                     android:thumb="@drawable/seek_thumb" android:splitTrack="false" />
             </LinearLayout>
-            <TextView android:id="@+id/np_device" android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="4dp" android:gravity="center" android:singleLine="true" android:ellipsize="end"
-                android:textColor="#99FFFFFF" android:textSize="12sp" />
         </LinearLayout>
     </FrameLayout>
 </FrameLayout>

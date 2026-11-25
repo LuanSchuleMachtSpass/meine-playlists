@@ -119,7 +119,6 @@ class MainActivity : Activity() {
     private lateinit var npCover: ImageView
     private lateinit var npTitle: TextView
     private lateinit var npArtist: TextView
-    private lateinit var npDevice: TextView
     private lateinit var npSeek: SeekBar
     private lateinit var npLeft: TextView
     private lateinit var npRight: TextView
@@ -145,7 +144,6 @@ class MainActivity : Activity() {
             if (Safety.enforceLocal(this@MainActivity)) capNotice()
             if (local) renderPlayer()
             animateProgress()
-            if (nowOpen) renderInfoLine()
             if (current() is SettingsPage && tickCount % 15 == 0) render()
             handler.postDelayed(this, 1000)
         }
@@ -170,7 +168,6 @@ class MainActivity : Activity() {
         npCover = findViewById(R.id.np_cover)
         npTitle = findViewById(R.id.np_title)
         npArtist = findViewById(R.id.np_artist)
-        npDevice = findViewById(R.id.np_device)
         npSeek = findViewById(R.id.np_seek)
         npLeft = findViewById(R.id.np_left)
         npRight = findViewById(R.id.np_right)
@@ -1060,7 +1057,6 @@ class MainActivity : Activity() {
         }
         lastCoverKey = coverKey
         renderControls()
-        renderInfoLine()
     }
 
     private fun renderControls() {
@@ -1071,14 +1067,6 @@ class MainActivity : Activity() {
         val repeat = if (local) "off" else n?.repeat ?: "off"
         npRepeat.setImageResource(if (repeat == "track") R.drawable.ic_repeat_one else R.drawable.ic_repeat)
         npRepeat.imageTintList = ColorStateList.valueOf(if (repeat != "off") accent else 0xB3FFFFFF.toInt())
-    }
-
-    /** Zeile unten im Player: Zeitlimit, Ohrschutz. */
-    private fun renderInfoLine() {
-        val parts = ArrayList<String>()
-        if (Safety.sleepAt(this) != 0L) parts += "Zeitlimit: " + timerText().substringAfter("· ")
-        Safety.earCap(this).takeIf { it > 0 }?.let { parts += "Ohrschutz $it %" }
-        npDevice.text = parts.joinToString("  ·  ")
     }
 
     // ---------- Zeitlimit & Ohrschutz ----------
