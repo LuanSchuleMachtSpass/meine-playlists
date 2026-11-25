@@ -55,10 +55,13 @@ object Api {
             }
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
+            // Antwort komplett lesen und Stream schließen – ohne disconnect(), damit die
+            // TLS-Verbindung im Keep-Alive-Pool bleibt und die nächste Anfrage sofort startet.
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             return code to text
-        } finally {
+        } catch (e: java.io.IOException) {
             c.disconnect()
+            throw e
         }
     }
 }

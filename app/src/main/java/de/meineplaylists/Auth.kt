@@ -76,7 +76,8 @@ object Auth {
     fun accessToken(ctx: Context, forceRefresh: Boolean = false): String? {
         val p = prefs(ctx)
         val token = p.getString("access_token", null)
-        if (!forceRefresh && token != null && System.currentTimeMillis() < p.getLong("expires_at", 0) - 60_000) {
+        // 5 Minuten Puffer: erneuert wird vorab im Hintergrund, nicht erst beim Abspielen
+        if (!forceRefresh && token != null && System.currentTimeMillis() < p.getLong("expires_at", 0) - 300_000) {
             return token
         }
         val refresh = p.getString("refresh_token", null) ?: return null
@@ -118,8 +119,9 @@ object Auth {
                 ?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) throw AuthException(code, text)
             return JSONObject(text)
-        } finally {
+        } catch (e: java.io.IOException) {
             c.disconnect()
+            throw e
         }
     }
 }

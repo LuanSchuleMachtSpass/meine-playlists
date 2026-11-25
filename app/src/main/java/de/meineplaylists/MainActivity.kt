@@ -142,6 +142,10 @@ class MainActivity : Activity() {
         override fun run() {
             if (!running) return
             if (tickCount++ % 4 == 0 && !local) fetchNowPlaying()
+            // Token rechtzeitig im Hintergrund erneuern, damit das beim Antippen keine Zeit kostet
+            if (tickCount % 60 == 1 && Auth.isLoggedIn(this@MainActivity) && isOnline()) {
+                bg { try { Auth.accessToken(this@MainActivity) } catch (_: Exception) {} }
+            }
             if (Safety.enforceLocal(this@MainActivity)) capNotice()
             if (local) renderPlayer()
             animateProgress()
@@ -180,7 +184,11 @@ class MainActivity : Activity() {
         miniCover.roundCorners(10f)
         npCover.roundCorners(18f)
 
-        remote = Remote(this, afterAction = { handler.postDelayed({ fetchNowPlaying() }, 600) }, onLoggedOut = {
+        remote = Remote(this, afterAction = {
+            // zweimal nachsehen: schnell für die Anzeige, später zur Sicherheit
+            handler.postDelayed({ fetchNowPlaying() }, 350)
+            handler.postDelayed({ fetchNowPlaying() }, 1300)
+        }, onLoggedOut = {
             Auth.logout(this); resetToRoot()
         })
 
@@ -522,7 +530,10 @@ class MainActivity : Activity() {
     )
 
     private fun playlistRows(pl: Playlist): List<Row> {
-        val head = playRows({ playContext(pl.uri, false, 0) }, { playContext(pl.uri, true, null) })
+        val head = playRows(
+            { playContext(pl.uri, false, 0, preview = lists[pl.id]?.firstOrNull { it.playable }) },
+            { playContext(pl.uri, true, null, total = pl.total) },
+        )
         if (!pl.owned) {
             return head + Row(
                 "Titelliste nicht verfügbar",
@@ -532,7 +543,7 @@ class MainActivity : Activity() {
         }
         val ts = lists[pl.id] ?: run { loadList(pl.id) { Spotify.tracks(it, pl.id) }; return head + loadingRow() }
         return head + ts.map { t ->
-            trackRow(t) { stopLocal(); remote.withDevice { d -> Spotify.play(this, d, pl.uri, t.position) }; openNow() }
+            trackRow(t) { playContext(pl.uri, false, t.position, preview = t) }
         }
     }
 
@@ -977,12 +988,43 @@ class MainActivity : Activity() {
     }
 
     // ---------- Abspielen ----------
-    private fun playContext(uri: String, shuffle: Boolean, position: Int?) {
+    /** Zufall-Anfrage nur schicken, wenn der bekannte Zustand abweicht – spart eine Anfrage vor dem Start. */
+    private fun needShuffleCall(want: Boolean) = np?.shuffle != want
+
+    /** Song sofort im Player anzeigen, noch bevor Spotify antwortet. */
+    private fun showOptimistic(t: Track) {
+        np = NowPlaying(
+            isPlaying = true, title = t.name, subtitle = t.subtitle, imageUrl = t.imageUrl,
+            deviceName = np?.deviceName, trackUri = t.uri, progressMs = 0, durationMs = t.durationMs,
+            volume = np?.volume, bigImageUrl = t.albumImage ?: t.imageUrl,
+            shuffle = np?.shuffle ?: false, repeat = np?.repeat ?: "off",
+        )
+        npAt = System.currentTimeMillis()
+        optimisticUri = t.uri
+        optimisticUntil = npAt + 3000
+        renderPlayer()
+        animateProgress()
+        adapter.notifyDataSetChanged()
+    }
+
+    private var optimisticUri: String? = null
+    private var optimisticUntil = 0L
+
+    private fun playContext(uri: String, shuffle: Boolean, position: Int?, total: Int = 0, preview: Track? = null) {
         stopLocal()
+        preview?.let { showOptimistic(it) }
+        val needShuffle = needShuffleCall(shuffle)
+        // Zufall mit bekannter Länge: sofort an zufälliger Stelle starten und Zufall danach setzen
+        val shuffleAfter = shuffle && position == null && total > 1
+        val startPos = if (shuffleAfter) (0 until total).random() else position
         remote.withDevice { d ->
-            try { Spotify.shuffle(this, shuffle, d) } catch (e: ApiException) { if (e.status == 404) throw e }
-            Spotify.play(this, d, uri, position)
+            if (needShuffle && !shuffleAfter) {
+                try { Spotify.shuffle(this, shuffle, d) } catch (e: ApiException) { if (e.status == 404) throw e }
+            }
+            Spotify.play(this, d, uri, startPos)
+            if (needShuffle && shuffleAfter) try { Spotify.shuffle(this, true, d) } catch (_: Exception) {}
         }
+        np = np?.copy(shuffle = shuffle)
         openNow()
     }
 
@@ -995,10 +1037,15 @@ class MainActivity : Activity() {
             else -> uris
         }
         stopLocal()
+        all.firstOrNull { it.uri == order.first() }?.let { showOptimistic(it) }
+        val needShuffle = needShuffleCall(false)
         remote.withDevice { d ->
-            try { Spotify.shuffle(this, false, d) } catch (e: ApiException) { if (e.status == 404) throw e }
+            if (needShuffle) {
+                try { Spotify.shuffle(this, false, d) } catch (e: ApiException) { if (e.status == 404) throw e }
+            }
             Spotify.playUris(this, d, order)
         }
+        np = np?.copy(shuffle = false)
         openNow()
     }
 
@@ -1061,6 +1108,9 @@ class MainActivity : Activity() {
         bg {
             val r = try { Spotify.nowPlaying(this) } catch (_: Exception) { return@bg }
             ui {
+                // Kurz nach dem Antippen meldet Spotify evtl. noch den alten Song – dann nicht zurückspringen
+                if (System.currentTimeMillis() < optimisticUntil && r?.trackUri != optimisticUri) return@ui
+                optimisticUntil = 0L
                 val trackChanged = r?.trackUri != np?.trackUri
                 np = r
                 capSpotifyVolume(r?.volume)
